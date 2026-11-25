@@ -23,7 +23,26 @@ Ouvrez le panneau **Continue** dans votre IDE (IntelliJ IDEA ou VS Code), modifi
 Lancez le test **3 fois avec `temperature = 0.0`**, puis **3 fois avec `temperature = 1.2`**.
 
 ### Points d'observation :
-* **Stabilité de la signature :** Modificateurs d'accès (`public static boolean`), nommage en `camelCase`, gestion des valeurs `null` (`Objects.requireNonNull` vs retour `false`).
+* **Stabilité de la signature :** Modificateurs d'accès (`public static boolean`), nommage en `camelCase`, gestion des valeurs `null`.
 * **Gestion des cas limites :** Nettoyage des espaces, vérification de la longueur exacte (14 chiffres) et prise en compte de l'exception historique de La Poste.
 * **Documentation et style :** Cohérence des blocs Javadoc (`@param`, `@return`) et approche algorithmique choisie (`IntStream` vs boucle `for` classique).
 * **Hallucinations :** Apparition éventuelle de méthodes inexistantes sur `String`, `Character` ou `IntStream` lorsque la température augmente.
+
+---
+
+## Étape 3 : Application de mesure `BenchmarkTokens.java`
+
+Écrivez une classe Java (`src/main/java/fr/formation/ia/tp1/BenchmarkTokens.java`) utilisant `java.net.http.HttpClient` natif qui :
+1. Envoie une requête de génération de code à l'API choisie.
+2. Mesure le temps exact d'exécution avec `System.nanoTime()`.
+3. Extrait les compteurs `usage.prompt_tokens` et `usage.completion_tokens` de la réponse JSON.
+4. Calcule et affiche le coût exact de l'appel en dollars (`$`) et en euros (`€`).
+5. Compare deux versions du même prompt : une version bavarde rédigée en langage courant, et une version condensée et structurée.
+
+---
+
+## Livrables attendus
+
+* Dépôt Git initialisé avec `.gitignore` et `.env.example` propres.
+* Classe `tp1/BenchmarkTokens.java` fonctionnelle.
+* Premier tableau de relevés consigné dans `STATS.md`.
