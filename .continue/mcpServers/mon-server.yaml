@@ -1,8 +1,14 @@
-name: MCP PHP Skills
+name: MCP NodeJS Skills
 version: 0.0.1
 schema: v1
 mcpServers:
-  - name: mcp-php
-    command: php
+  - name: mcp-node
+    command: node
     args:
-      - server-mcp.php
+      - ressources/mcp/training-scripts/nodejs/server-mcp.mjs
+  - name: filesystem
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-filesystem"
+      - "."

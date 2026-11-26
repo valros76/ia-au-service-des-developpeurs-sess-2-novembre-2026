@@ -5,8 +5,8 @@
  * - Si entreprise.db est présente, active aussi les outils SQLite du TP 3 (db://schema + query_database)
  *
  * - Pour tester le serveur en CLI :
- * - exécution skill : node server-mcp.mjs revue_node exemple_sale.js
- * - prévisualisation : node server-mcp.mjs revue_node exemple_sale.js --prompt
+ * - exécution skill : node server-mcp.mjs review-node example-sale.js
+ * - prévisualisation : node server-mcp.mjs review-node example-sale.js --prompt
  * - requête SQLite  : node server-mcp.mjs sql "SELECT * FROM produits"
  */
 
@@ -14,11 +14,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ============================================================================
 // 1. RECHERCHE RACINE PROJET & CHARGEMENT DU .ENV
 // ============================================================================
 function findProjectRoot(startDir) {
+  // Priorité absolue au dossier contenant server-mcp.mjs (__dirname)
+  if (
+    fs.existsSync(path.join(__dirname, '.prompts')) ||
+    fs.existsSync(path.join(__dirname, '.env')) ||
+    fs.existsSync(path.join(__dirname, 'entreprise.db'))
+  ) {
+    return __dirname;
+  }
+
   let dir = startDir;
   while (true) {
     if (
@@ -53,8 +65,13 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY ?? '';
 // ============================================================================
 // 2. MODULE SQLITE (TP 3 - actif automatiquement si entreprise.db existe)
 // ============================================================================
-const dbPath = path.join(projectRoot, 'entreprise.db');
-const db = fs.existsSync(dbPath) ? new DatabaseSync(dbPath, { readOnly: true }) : null;
+const candidateDbs = [
+  path.join(__dirname, 'entreprise.db'),
+  path.join(__dirname, 'enterprise.db'),
+  path.join(projectRoot, 'entreprise.db'),
+];
+const dbPath = candidateDbs.find((p) => fs.existsSync(p)) ?? null;
+const db = dbPath ? new DatabaseSync(dbPath, { readOnly: true }) : null;
 const FORBIDDEN_KEYWORDS = /\b(DROP|DELETE|UPDATE|INSERT|ALTER|PRAGMA|ATTACH|DETACH|REPLACE|VACUUM)\b/i;
 
 function executeSafeSelect(rawSql) {
@@ -315,6 +332,10 @@ for await (const line of rl) {
       send(id, { resources: resList });
       break;
     }
+
+    case 'resources/templates/list':
+      send(id, { resourceTemplates: [] });
+      break;
 
     case 'resources/read': {
       const uri = String(params.uri ?? '');
