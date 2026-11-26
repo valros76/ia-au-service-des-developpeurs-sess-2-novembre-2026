@@ -1,9 +1,3 @@
 .env
 .env.*
 !.env.example
-
-corriges/
-corriges/*
-!corriges/tp1/*
-!corriges/tp2/*
-!corriges/tp3/*
