@@ -100,7 +100,7 @@ function getDatabaseSchema() {
 // ============================================================================
 // 3. MODULE SKILLS .MDR + GROQ (Base initiale conservée)
 // ============================================================================
-async function askGroq(prompt, model = 'llama-3.3-70b-versatile') {
+async function askGroq(prompt, model = 'openai/gpt-oss-120b') {
   if (!GROQ_API_KEY) {
     throw new Error('Variable GROQ_API_KEY absente dans .env.');
   }

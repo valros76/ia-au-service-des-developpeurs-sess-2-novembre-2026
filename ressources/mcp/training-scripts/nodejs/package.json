@@ -1,0 +1,13 @@
+{
+  "name": "nodejs",
+  "private": true,
+  "scripts":{
+    "inspect-mcp":"npx @modelcontextprotocol/inspector node server-mcp.mjs"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}

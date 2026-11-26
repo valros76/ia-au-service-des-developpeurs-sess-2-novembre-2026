@@ -14,7 +14,7 @@
 declare(strict_types=1);
 
 // Sécurité absolue : aucune erreur PHP ne doit polluer STDOUT (réservé au JSON-RPC)
-ini_set('display_errors', '0');
+ini_set('display_errors', '1');
 error_reporting(E_ALL);
 
 // ============================================================================

@@ -1,341 +1,502 @@
-/**
- * - Nécessite une clé env : GROQ_API_KEY="votreCleGroq" (pour les skills .mdr)
- * - Si entreprise.db est présente (avec sqlite3 CLI), active aussi les outils SQLite du TP 3
- *
- * - Pour tester le serveur en CLI :
- * - exécution skill : java ServerMcp.java revue_java ExempleSale.java
- * - prévisualisation : java ServerMcp.java revue_java ExempleSale.java --prompt
- * - requête SQLite  : java ServerMcp.java sql "SELECT * FROM produits"
- */
-
-import java.io.*;
-import java.net.URI;
-import java.net.http.*;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.time.Duration;
-import java.util.*;
-import java.util.regex.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-public class ServerMcp {
+/**
+ * Serveur MCP custom en Java (transport stdio, JSON-RPC 2.0) pour le TP 3 :
+ * - Ressource : db://schema
+ * - Outil    : query_database (SELECT uniquement, >= 10 chars, LIMIT 50 auto, JSON)
+ *
+ * Prérequis : pilote JDBC SQLite (sqlite-jdbc) dans le classpath.
+ * Important : ne jamais écrire de logs sur System.out (réservé au JSON-RPC). Utiliser System.err.
+ */
+public class ServerJava {
 
-    record Skill(String name, String description, String template) {
-        String compile(String input) {
-            return template.contains("{{input}}")
-                ? template.replace("{{input}}", input)
-                : (template + "\n\n" + input).trim();
+    private static final String SERVER_NAME = "mcp-db-explorer-java";
+    private static final String SERVER_VERSION = "1.1.0";
+    private static final String PROTOCOL_VERSION = "2024-11-05";
+    private static final int DEFAULT_LIMIT = 50;
+
+    private static final List<String> FORBIDDEN_KEYWORDS = List.of(
+            "DROP", "DELETE", "UPDATE", "INSERT", "ALTER",
+            "PRAGMA", "ATTACH", "DETACH", "REPLACE", "VACUUM", "CREATE"
+    );
+
+    public static void main(String[] args) {
+        Path dbPath = resolveDatabasePath();
+        Connection conn = openReadOnlyConnection(dbPath);
+
+        if (conn == null) {
+            System.err.println("[Avertissement] entreprise.db introuvable. Lancez d'abord le script d'initialisation de la base.");
+        }
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8))) {
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                handleRawMessage(trimmed, conn, writer);
+            }
+        } catch (IOException e) {
+            System.err.println("[Erreur I/O stdio] " + e.getMessage());
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.close();
+                } catch (SQLException ignored) {
+                }
+            }
         }
     }
 
-    private static final HttpClient HTTP = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(10))
-        .build();
+    private static Path resolveDatabasePath() {
+        List<Path> candidates = new ArrayList<>();
+        Path cwd = Paths.get("").toAbsolutePath().normalize();
 
-    private static final Pattern FORBIDDEN_SQL = Pattern.compile(
-        "\\b(DROP|DELETE|UPDATE|INSERT|ALTER|PRAGMA|ATTACH|DETACH|REPLACE|VACUUM)\\b",
-        Pattern.CASE_INSENSITIVE
-    );
+        Path cursor = cwd;
+        for (int i = 0; i < 6 && cursor != null; i++) {
+            candidates.add(cursor.resolve("entreprise.db"));
+            candidates.add(cursor.resolve("tp3-mcp").resolve("entreprise.db"));
+            candidates.add(cursor.resolve("tp3-mcp-server").resolve("entreprise.db"));
+            candidates.add(cursor.resolve("ressources/mcp/training-scripts/java/entreprise.db"));
+            cursor = cursor.getParent();
+        }
 
-    public static void main(String[] args) throws Exception {
-        Path projectRoot = findProjectRoot(Path.of("").toAbsolutePath());
-        Map<String, String> env = loadDotEnv(projectRoot.resolve(".env"));
-
-        String groqApiKey = env.getOrDefault("GROQ_API_KEY",
-            Objects.requireNonNullElse(System.getenv("GROQ_API_KEY"), ""));
-
-        Path dbPath = projectRoot.resolve("entreprise.db");
-        boolean hasDb = Files.isRegularFile(dbPath);
-        Map<String, Skill> skills = loadMdrSkills(projectRoot.resolve(".prompts"));
-
-        // ====================================================================
-        // MODE CLI DIRECT
-        // ====================================================================
-        if (args.length > 0) {
-            List<String> argList = Arrays.asList(args);
-            boolean isPrompt = argList.contains("--prompt");
-            List<String> cleanArgs = argList.stream().filter(a -> !a.equals("--prompt")).toList();
-
-            String cmd = cleanArgs.isEmpty() ? "" : cleanArgs.get(0);
-            String target = cleanArgs.size() > 1 ? cleanArgs.get(1) : "";
-
-            if ("sql".equals(cmd)) {
-                try {
-                    System.out.println(executeSafeSelect(dbPath, target));
-                } catch (Exception e) {
-                    System.err.println("[Erreur SQL] " + e.getMessage());
-                    System.exit(1);
-                }
-                return;
+        for (Path candidate : candidates) {
+            if (Files.isRegularFile(candidate)) {
+                return candidate.normalize();
             }
+        }
+        return cwd.resolve("entreprise.db");
+    }
 
-            Skill skill = skills.get(cmd);
-            if (skill == null) {
-                String avail = skills.isEmpty() ? "(aucun .mdr dans .prompts/)" : String.join(", ", skills.keySet());
-                System.err.println("Skill introuvable : '" + cmd + "'\nDisponibles : " + avail + (hasDb ? ", sql" : ""));
-                System.exit(1);
+    private static Connection openReadOnlyConnection(Path dbPath) {
+        if (!Files.isRegularFile(dbPath)) {
+            return null;
+        }
+        try {
+            Class.forName("org.sqlite.JDBC");
+            String url = "jdbc:sqlite:" + dbPath.toAbsolutePath();
+            Connection conn = DriverManager.getConnection(url);
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("PRAGMA query_only = ON;");
             }
+            return conn;
+        } catch (ClassNotFoundException e) {
+            System.err.println("[Erreur JDBC] Pilote SQLite (org.sqlite.JDBC) introuvable dans le classpath : " + e.getMessage());
+            return null;
+        } catch (SQLException e) {
+            System.err.println("[Erreur SQLite] Impossible d'ouvrir " + dbPath + " : " + e.getMessage());
+            return null;
+        }
+    }
 
-            String input = (!target.isEmpty() && Files.isRegularFile(Path.of(target)))
-                ? Files.readString(Path.of(target))
-                : target;
+    private static void handleRawMessage(String rawJson, Connection conn, BufferedWriter writer) throws IOException {
+        String method = extractJsonString(rawJson, "method");
+        Object id = extractJsonId(rawJson);
 
-            String compiled = skill.compile(input);
-            if (isPrompt) {
-                System.out.println(compiled);
-                return;
-            }
-
-            System.out.println(askGroq(groqApiKey, compiled));
+        if (method == null || method.isEmpty()) {
             return;
         }
 
-        // ====================================================================
-        // MOTEUR JSON-RPC 2.0 / MCP UNIFIÉ (MDR + SQLITE)
-        // ====================================================================
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-        String line;
-        while ((line = reader.readLine()) != null) {
-            line = line.trim();
-            if (line.isEmpty()) continue;
+        if ("notifications/initialized".equals(method) || method.startsWith("notifications/")) {
+            return;
+        }
 
-            String id = extractJsonRaw(line, "id");
-            String method = extractJsonString(line, "method");
-            if (method == null) continue;
-
-            switch (method) {
-                case "initialize" -> sendResult(id, """
-                    {"protocolVersion":"2024-11-05","capabilities":{"prompts":{},"tools":{},"resources":{}},"serverInfo":{"name":"mcp-unified-java","version":"1.0.0"}}""");
-
-                case "notifications/initialized" -> {}
-
-                case "prompts/list" -> {
-                    List<String> items = new ArrayList<>();
-                    for (Skill s : skills.values()) {
-                        items.add("""
-                            {"name":%s,"description":%s,"arguments":[{"name":"input","description":"Contexte {{input}}","required":false}]}"""
-                            .formatted(jsonStr(s.name), jsonStr(s.description)));
-                    }
-                    sendResult(id, "{\"prompts\":[" + String.join(",", items) + "]}");
-                }
-
-                case "prompts/get" -> {
-                    String name = extractJsonString(line, "name");
-                    Skill s = skills.get(name);
-                    if (s == null) {
-                        sendError(id, -32601, "Prompt introuvable : " + name);
-                        break;
-                    }
-                    String input = Objects.requireNonNullElse(extractJsonString(line, "input"), "");
-                    sendResult(id, """
-                        {"description":%s,"messages":[{"role":"user","content":{"type":"text","text":%s}}]}"""
-                        .formatted(jsonStr(s.description), jsonStr(s.compile(input))));
-                }
-
-                case "tools/list" -> {
-                    List<String> items = new ArrayList<>();
-                    for (Skill s : skills.values()) {
-                        items.add("""
-                            {"name":%s,"description":%s,"inputSchema":{"type":"object","properties":{"input":{"type":"string","description":"Données à analyser"}},"required":["input"]}}"""
-                            .formatted(jsonStr(s.name), jsonStr("[Groq] " + s.description)));
-                    }
-                    if (hasDb) {
-                        items.add("""
-                            {"name":"query_database","description":"Exécute une requête SQL SELECT en lecture seule sur entreprise.db (LIMIT 50 automatique).","inputSchema":{"type":"object","properties":{"sql":{"type":"string","minLength":10,"description":"Requête SQL SELECT valide"}},"required":["sql"]}}""");
-                    }
-                    sendResult(id, "{\"tools\":[" + String.join(",", items) + "]}");
-                }
-
-                case "tools/call" -> {
-                    String name = extractJsonString(line, "name");
-                    if ("query_database".equals(name)) {
-                        try {
-                            String sql = Objects.requireNonNullElse(extractJsonString(line, "sql"), "");
-                            String jsonRows = executeSafeSelect(dbPath, sql);
-                            sendResult(id, "{\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(jsonRows) + "}]}");
-                        } catch (Exception e) {
-                            sendResult(id, "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(e.getMessage()) + "}]}");
+        switch (method) {
+            case "initialize" -> {
+                String result = """
+                        {
+                          "protocolVersion": "%s",
+                          "capabilities": {
+                            "tools": {},
+                            "resources": {}
+                          },
+                          "serverInfo": {
+                            "name": "%s",
+                            "version": "%s"
+                          }
                         }
-                        break;
-                    }
+                        """.formatted(PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION);
+                sendResult(writer, id, result);
+            }
 
-                    Skill s = skills.get(name);
-                    if (s == null) {
-                        sendError(id, -32601, "Outil introuvable : " + name);
-                        break;
-                    }
-                    try {
-                        String input = Objects.requireNonNullElse(extractJsonString(line, "input"), "");
-                        String answer = askGroq(groqApiKey, s.compile(input));
-                        sendResult(id, "{\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(answer) + "}]}");
-                    } catch (Exception e) {
-                        sendResult(id, "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(e.getMessage()) + "}]}");
-                    }
+            case "ping" -> sendResult(writer, id, "{}");
+
+            case "tools/list" -> {
+                String result = """
+                        {
+                          "tools": [
+                            {
+                              "name": "query_database",
+                              "description": "Exécute une requête SQL SELECT en lecture seule sur entreprise.db (limite automatique à 50 lignes).",
+                              "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                  "sql": {
+                                    "type": "string",
+                                    "description": "Requête SQL SELECT (minimum 10 caractères, sans modification de données)"
+                                  }
+                                },
+                                "required": ["sql"]
+                              }
+                            }
+                          ]
+                        }
+                        """;
+                sendResult(writer, id, result);
+            }
+
+            case "tools/call" -> {
+                String toolName = extractNestedString(rawJson, "params", "name");
+                if (!"query_database".equals(toolName)) {
+                    sendError(writer, id, -32601, "Outil introuvable : " + toolName);
+                    return;
                 }
 
-                case "resources/list" -> {
-                    List<String> items = new ArrayList<>();
-                    for (Skill s : skills.values()) {
-                        items.add("""
-                            {"uri":%s,"name":%s,"description":%s,"mimeType":"text/markdown"}"""
-                            .formatted(jsonStr("skill://" + s.name), jsonStr(s.name + ".mdr"), jsonStr(s.description)));
+                String sqlParam = extractArgumentString(rawJson, "sql");
+                try {
+                    if (conn == null) {
+                        throw new IllegalStateException("Base entreprise.db introuvable ou inaccessible.");
                     }
-                    if (hasDb) {
-                        items.add("""
-                            {"uri":"db://schema","name":"Schéma SQLite (entreprise.db)","description":"Structure DDL (CREATE TABLE) de la base entreprise.db","mimeType":"text/plain"}""");
-                    }
-                    sendResult(id, "{\"resources\":[" + String.join(",", items) + "]}");
+                    List> rows = executeSafeSelect(conn, sqlParam == null ? "" : sqlParam);
+                    String rowsJson = toJsonArray(rows);
+                    String contentPayload = """
+                            {
+                              "content": [
+                                {
+                                  "type": "text",
+                                  "text": %s
+                                }
+                              ]
+                            }
+                            """.formatted(jsonEscape(rowsJson));
+                    sendResult(writer, id, contentPayload);
+                } catch (Exception e) {
+                    String errPayload = """
+                            {
+                              "isError": true,
+                              "content": [
+                                {
+                                  "type": "text",
+                                  "text": %s
+                                }
+                              ]
+                            }
+                            """.formatted(jsonEscape(e.getMessage() == null ? "Erreur d'exécution SQL" : e.getMessage()));
+                    sendResult(writer, id, errPayload);
                 }
+            }
 
-                case "resources/read" -> {
-                    String uri = Objects.requireNonNullElse(extractJsonString(line, "uri"), "");
-                    if ("db://schema".equals(uri) && hasDb) {
-                        String schema = runSqliteCli(dbPath, List.of(), "SELECT sql || ';' FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
-                        sendResult(id, "{\"contents\":[{\"uri\":\"db://schema\",\"mimeType\":\"text/plain\",\"text\":" + jsonStr(schema) + "}]}");
-                        break;
-                    }
+            case "resources/list" -> {
+                String result = """
+                        {
+                          "resources": [
+                            {
+                              "uri": "db://schema",
+                              "name": "Schéma SQLite (entreprise.db)",
+                              "description": "Structure DDL (CREATE TABLE) de la base entreprise.db",
+                              "mimeType": "text/plain"
+                            }
+                          ]
+                        }
+                        """;
+                sendResult(writer, id, result);
+            }
 
-                    String name = uri.startsWith("skill://") ? uri.substring(8) : "";
-                    Skill s = skills.get(name);
-                    if (s == null) {
-                        sendError(id, -32602, "Ressource inconnue : " + uri);
-                        break;
-                    }
-                    sendResult(id, """
-                        {"contents":[{"uri":%s,"mimeType":"text/markdown","text":%s}]}"""
-                        .formatted(jsonStr(uri), jsonStr(s.template)));
+            case "resources/templates/list" -> sendResult(writer, id, "{\"resourceTemplates\":[]}");
+
+            case "resources/read" -> {
+                String uri = extractNestedString(rawJson, "params", "uri");
+                if (!"db://schema".equals(uri)) {
+                    sendError(writer, id, -32602, "Ressource inconnue : " + uri);
+                    return;
                 }
+                if (conn == null) {
+                    sendError(writer, id, -32000, "Base entreprise.db introuvable.");
+                    return;
+                }
+                try {
+                    String ddl = getDatabaseSchema(conn);
+                    String resPayload = """
+                            {
+                              "contents": [
+                                {
+                                  "uri": "db://schema",
+                                  "mimeType": "text/plain",
+                                  "text": %s
+                                }
+                              ]
+                            }
+                            """.formatted(jsonEscape(ddl));
+                    sendResult(writer, id, resPayload);
+                } catch (SQLException e) {
+                    sendError(writer, id, -32000, "Erreur lecture schéma : " + e.getMessage());
+                }
+            }
 
-                case "ping" -> sendResult(id, "{}");
-
-                default -> {
-                    if (id != null) sendError(id, -32601, "Méthode non supportée : " + method);
+            default -> {
+                if (id != null) {
+                    sendError(writer, id, -32601, "Méthode non supportée : " + method);
                 }
             }
         }
     }
 
-    private static String executeSafeSelect(Path dbPath, String rawSql) throws Exception {
-        if (!Files.isRegularFile(dbPath)) throw new RuntimeException("Base entreprise.db introuvable.");
-        if (rawSql == null || rawSql.trim().length() < 10) {
-            throw new IllegalArgumentException("Paramètre sql invalide (minimum 10 caractères requis).");
-        }
-        String cleaned = rawSql.trim().replaceAll(";+$", "");
-        if (cleaned.contains(";")) throw new IllegalArgumentException("Sécurité : requêtes multiples interdites.");
-        if (!cleaned.matches("(?is)^SELECT\\b.*")) throw new IllegalArgumentException("Sécurité : seul SELECT est autorisé.");
-        if (FORBIDDEN_SQL.matcher(cleaned).find()) throw new IllegalArgumentException("Sécurité : mot-clé SQL interdit.");
-
-        String finalSql = cleaned.matches("(?is).*\\bLIMIT\\s+\\d+.*") ? cleaned : cleaned + " LIMIT 50";
-        String out = runSqliteCli(dbPath, List.of("-json"), finalSql + ";");
-        return out.isBlank() ? "[]" : out;
-    }
-
-    private static String runSqliteCli(Path dbPath, List<String> flags, String sql) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("sqlite3", "-readonly"));
-        cmd.addAll(flags);
-        cmd.add(dbPath.toString());
-        cmd.add(sql);
-
-        Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
-        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-        if (p.waitFor() != 0) throw new RuntimeException("Erreur SQLite : " + output);
-        return output;
-    }
-
-    private static Path findProjectRoot(Path startDir) {
-        Path dir = startDir;
-        while (dir != null) {
-            if (Files.isDirectory(dir.resolve(".prompts")) || Files.isRegularFile(dir.resolve(".env")) || Files.isRegularFile(dir.resolve("entreprise.db"))) {
-                return dir;
-            }
-            dir = dir.getParent();
-        }
-        return startDir;
-    }
-
-    private static String askGroq(String apiKey, String prompt) throws Exception {
-        if (apiKey.isBlank()) throw new RuntimeException("Variable GROQ_API_KEY absente dans .env.");
-        String body = """
-            {"model":"llama-3.3-70b-versatile","messages":[{"role":"user","content":%s}]}"""
-            .formatted(jsonStr(prompt));
-
-        HttpRequest req = HttpRequest.newBuilder()
-            .uri(URI.create("https://api.groq.com/openai/v1/chat/completions"))
-            .header("Authorization", "Bearer " + apiKey)
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(30))
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build();
-
-        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() >= 400) {
-            throw new RuntimeException("Erreur HTTP Groq " + resp.statusCode() + " : " + resp.body());
-        }
-        String content = extractJsonString(resp.body(), "content");
-        return content != null ? content : "Réponse vide de Groq.";
-    }
-
-    private static Map<String, String> loadDotEnv(Path path) throws IOException {
-        Map<String, String> map = new HashMap<>();
-        if (!Files.isRegularFile(path)) return map;
-        for (String raw : Files.readAllLines(path)) {
-            String line = raw.trim();
-            if (line.isEmpty() || line.startsWith("#") || !line.contains("=")) continue;
-            String[] parts = line.split("=", 2);
-            map.put(parts[0].trim(), parts[1].trim().replaceAll("^[\"']|[\"']$", ""));
-        }
-        return map;
-    }
-
-    private static Map<String, Skill> loadMdrSkills(Path dir) throws IOException {
-        Map<String, Skill> skills = new LinkedHashMap<>();
-        if (!Files.isDirectory(dir)) return skills;
-
-        Pattern fmPattern = Pattern.compile("^---\\s*\\R(.*?)\\R---\\s*\\R(.*)$", Pattern.DOTALL);
-        Pattern descPattern = Pattern.compile("^description:\\s*(.+)$", Pattern.MULTILINE);
-
-        try (var stream = Files.list(dir)) {
-            for (Path file : stream.filter(p -> p.toString().endsWith(".mdr")).sorted().toList()) {
-                String raw = Files.readString(file).trim();
-                if (raw.isEmpty()) continue;
-
-                String base = file.getFileName().toString().replaceFirst("\\.mdr$", "");
-                String name = base.replaceAll("[^a-zA-Z0-9_-]", "_");
-                String desc = "Skill " + name + " (.mdr)";
-                String body = raw;
-
-                Matcher m = fmPattern.matcher(raw);
-                if (m.find()) {
-                    body = m.group(2).trim();
-                    Matcher d = descPattern.matcher(m.group(1));
-                    if (d.find()) desc = d.group(1).trim();
+    private static String getDatabaseSchema(Connection conn) throws SQLException {
+        String query = """
+                SELECT sql
+                FROM sqlite_master
+                WHERE type IN ('table', 'view', 'index')
+                  AND sql IS NOT NULL
+                  AND name NOT LIKE 'sqlite_%'
+                ORDER BY CASE type WHEN 'table' THEN 1 WHEN 'view' THEN 2 ELSE 3 END, name
+                """;
+        List<String> statements = new ArrayList<>();
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(query)) {
+            while (rs.next()) {
+                String sql = rs.getString("sql");
+                if (sql != null && !sql.isBlank()) {
+                    String clean = sql.trim();
+                    if (!clean.endsWith(";")) {
+                        clean = clean + ";";
+                    }
+                    statements.add(clean);
                 }
-                skills.put(name, new Skill(name, desc, body));
             }
         }
-        return skills;
+        return statements.isEmpty() ? "-- Aucun objet SQL trouvé." : String.join("\n\n", statements);
     }
 
-    private static void sendResult(String id, String resultJson) {
-        System.out.println("{\"jsonrpc\":\"2.0\",\"id\":" + (id == null ? "null" : id) + ",\"result\":" + resultJson + "}");
-        System.out.flush();
+    private static List> executeSafeSelect(Connection conn, String rawSql) throws SQLException {
+        String trimmed = rawSql.trim();
+        if (trimmed.length() < 10) {
+            throw new IllegalArgumentException("Requête SQL trop courte (minimum 10 caractères).");
+        }
+
+        // Retire un éventuel point-virgule final, mais interdit tout autre ';' (requêtes multiples)
+        String withoutTrailingSemi = trimmed.replaceAll("[;\\s]+$", "");
+        if (withoutTrailingSemi.contains(";")) {
+            throw new IllegalArgumentException("Sécurité : plusieurs instructions SQL ne sont pas autorisées.");
+        }
+
+        if (!Pattern.compile("^SELECT\\b", Pattern.CASE_INSENSITIVE).matcher(withoutTrailingSemi).find()) {
+            throw new IllegalArgumentException("Sécurité : seules les requêtes SELECT sont autorisées.");
+        }
+
+        for (String kw : FORBIDDEN_KEYWORDS) {
+            Pattern p = Pattern.compile("\\b" + Pattern.quote(kw) + "\\b", Pattern.CASE_INSENSITIVE);
+            if (p.matcher(withoutTrailingSemi).find()) {
+                throw new IllegalArgumentException("Sécurité : mot-clé interdit détecté (" + kw + ").");
+            }
+        }
+
+        boolean hasLimit = Pattern.compile("\\bLIMIT\\b", Pattern.CASE_INSENSITIVE).matcher(withoutTrailingSemi).find();
+        String finalSql = hasLimit ? withoutTrailingSemi : withoutTrailingSemi + " LIMIT " + DEFAULT_LIMIT;
+
+        List> rows = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(finalSql);
+             ResultSet rs = ps.executeQuery()) {
+            ResultSetMetaData meta = rs.getMetaData();
+            int colCount = meta.getColumnCount();
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                for (int i = 1; i <= colCount; i++) {
+                    String colName = meta.getColumnLabel(i);
+                    row.put(colName, rs.getObject(i));
+                }
+                rows.add(row);
+            }
+        }
+        return rows;
     }
 
-    private static void sendError(String id, int code, String message) {
-        System.out.println("{\"jsonrpc\":\"2.0\",\"id\":" + (id == null ? "null" : id) + ",\"error\":{\"code\":" + code + ",\"message\":" + jsonStr(message) + "}}");
-        System.out.flush();
+    private static void sendResult(BufferedWriter writer, Object id, String resultJson) throws IOException {
+        String idPart = formatJsonId(id);
+        String frame = "{\"jsonrpc\":\"2.0\",\"id\":" + idPart + ",\"result\":" + resultJson + "}";
+        writer.write(frame.replaceAll("\\R+", " "));
+        writer.newLine();
+        writer.flush();
     }
 
-    private static String jsonStr(String s) {
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
-            .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
+    private static void sendError(BufferedWriter writer, Object id, int code, String message) throws IOException {
+        String idPart = formatJsonId(id);
+        String frame = "{\"jsonrpc\":\"2.0\",\"id\":" + idPart + ",\"error\":{\"code\":" + code + ",\"message\":" + jsonEscape(message) + "}}";
+        writer.write(frame);
+        writer.newLine();
+        writer.flush();
     }
 
-    private static String extractJsonRaw(String json, String key) {
-        Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*(\"[^\"]*\"|\\d+|null)").matcher(json);
-        return m.find() ? m.group(1) : null;
+    private static String formatJsonId(Object id) {
+        if (id == null) {
+            return "null";
+        }
+        if (id instanceof Number) {
+            return id.toString();
+        }
+        return jsonEscape(id.toString());
+    }
+
+    private static Object extractJsonId(String json) {
+        Matcher numMatcher = Pattern.compile("\"id\"\\s*:\\s*(-?\\d+)").matcher(json);
+        if (numMatcher.find()) {
+            try {
+                return Long.parseLong(numMatcher.group(1));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        Matcher strMatcher = Pattern.compile("\"id\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"").matcher(json);
+        if (strMatcher.find()) {
+            return unescapeJsonString(strMatcher.group(1));
+        }
+        return null;
     }
 
     private static String extractJsonString(String json, String key) {
-        Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"").matcher(json);
-        if (!m.find()) return null;
-        return m.group(1).replace("\\
+        Matcher m = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"").matcher(json);
+        return m.find() ? unescapeJsonString(m.group(1)) : null;
+    }
+
+    private static String extractNestedString(String json, String parentKey, String childKey) {
+        int idx = json.indexOf("\"" + parentKey + "\"");
+        if (idx < 0) {
+            return extractJsonString(json, childKey);
+        }
+        return extractJsonString(json.substring(idx), childKey);
+    }
+
+    private static String extractArgumentString(String json, String argName) {
+        int argsIdx = json.indexOf("\"arguments\"");
+        String scope = argsIdx >= 0 ? json.substring(argsIdx) : json;
+        return extractJsonString(scope, argName);
+    }
+
+    private static String unescapeJsonString(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char next = s.charAt(++i);
+                switch (next) {
+                    case '"' -> sb.append('"');
+                    case '\\' -> sb.append('\\');
+                    case '/' -> sb.append('/');
+                    case 'b' -> sb.append('\b');
+                    case 'f' -> sb.append('\f');
+                    case 'n' -> sb.append('\n');
+                    case 'r' -> sb.append('\r');
+                    case 't' -> sb.append('\t');
+                    case 'u' -> {
+                        if (i + 4 < s.length()) {
+                            String hex = s.substring(i + 1, i + 5);
+                            try {
+                                sb.append((char) Integer.parseInt(hex, 16));
+                                i += 4;
+                            } catch (NumberFormatException e) {
+                                sb.append("\\u").append(hex);
+                                i += 4;
+                            }
+                        }
+                    }
+                    default -> sb.append(next);
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String jsonEscape(String s) {
+        if (s == null) {
+            return "null";
+        }
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        sb.append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        sb.append('"');
+        return sb.toString();
+    }
+
+    private static String toJsonArray(List> rows) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < rows.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(toJsonObject(rows.get(i)));
+        }
+        sb.append(']');
+        return sb.toString();
+    }
+
+    private static String toJsonObject(Map<String, Object> map) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append(jsonEscape(entry.getKey())).append(':').append(toJsonValue(entry.getValue()));
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static String toJsonValue(Object val) {
+        if (val == null) {
+            return "null";
+        }
+        if (val instanceof Number || val instanceof Boolean) {
+            return val.toString();
+        }
+        if (val instanceof byte[] bytes) {
+            return jsonEscape("[BLOB:" + bytes.length + " bytes]");
+        }
+        return jsonEscape(val.toString());
+    }
+}
