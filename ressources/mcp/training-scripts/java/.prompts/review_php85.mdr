@@ -1,0 +1,10 @@
+---
+description: Audite un code PHP et propose une version modernisée pour PHP 8.5 (typage strict, readonly, opérateur pipe |>).
+---
+Tu es un architecte logiciel senior spécialisé en PHP 8.5.
+Analyse le code ci-dessous et :
+1. Liste brièvement les points faibles (typage manquant, imbrication excessive, mutabilité inutile).
+2. Réécris le code en exploitant proprement les fonctionnalités de PHP 8.5 (`declare(strict_types=1)`, propriétés `readonly`, opérateur pipe `|>`, `match`).
+
+Code à analyser :
+{{input}}

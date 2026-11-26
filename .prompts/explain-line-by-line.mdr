@@ -1,0 +1,10 @@
+---
+description: Explique pédagogiquement un fichier de code source, quel que soit son langage.
+---
+Explique le fonctionnement du code ci-dessous de manière claire et structurée :
+- **Rôle général** en une phrase.
+- **Décomposition étape par étape** des blocs importants.
+- **Points d'attention** (sécurité, performance ou cas limites).
+
+Code source :
+{{input}}

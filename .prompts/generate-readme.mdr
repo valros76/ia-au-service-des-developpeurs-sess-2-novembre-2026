@@ -1,0 +1,10 @@
+---
+description: Génère une documentation Markdown (README) prête à l'emploi à partir d'un fichier source.
+---
+À partir du code suivant, rédige une section de documentation technique au format Markdown comprenant :
+- Une description concise de la fonctionnalité.
+- Les prérequis et paramètres attendus.
+- Un exemple concret d'utilisation en ligne de commande ou dans le code.
+
+Code source :
+{{input}}

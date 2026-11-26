@@ -1,0 +1,13 @@
+---
+description: Génère une suite de tests unitaires PHPUnit couvrant les cas nominaux et les cas limites.
+---
+Génère une classe de test PHPUnit 11 complète et exécutable pour le code suivant.
+Inclus systématiquement :
+- Les cas nominaux.
+- Les cas limites (chaînes vides, valeurs nulles, limites numériques).
+- Les cas d'erreur attendus (`expectException`).
+
+Ne fournis que le code PHP prêt à être copié, sans blabla inutile.
+
+Code cible :
+{{input}}

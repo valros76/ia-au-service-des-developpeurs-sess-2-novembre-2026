@@ -1,0 +1,8 @@
+---
+description: Génère la documentation OpenAPI 3.1 (YAML) à partir d'un contrôleur ou d'une route PHP.
+---
+Analyse le code de point de terminaison suivant et génère sa spécification complète au format **OpenAPI 3.1 (YAML)**.
+Déduis les paramètres d'entrée, les types de données, les codes de retour HTTP (200, 400, 404, 500) et un exemple de payload JSON réaliste.
+
+Code de la route :
+{{input}}

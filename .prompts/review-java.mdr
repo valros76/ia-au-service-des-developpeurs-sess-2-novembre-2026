@@ -1,0 +1,10 @@
+---
+description: Refactorise une classe Java vers Java 25 LTS moderne (records, pattern matching, switch expressions, NIO.2, Optional).
+---
+Tu es un expert Java (25 LTS).
+Analyse le code Java suivant et :
+1. Relève les lourdeurs héritées (POJO verbeux, gestion manuelle de flux I/O, chaînes de `if/else instanceof`, retours `null` non sécurisés).
+2. Réécris le code en Java moderne avec `record`, `Optional`, `java.nio.file.Files`, et des expressions `switch` avec pattern matching.
+
+Code Java à analyser :
+{{input}}
