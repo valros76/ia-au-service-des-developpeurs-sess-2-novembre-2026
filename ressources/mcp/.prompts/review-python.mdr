@@ -1,0 +1,10 @@
+---
+description: Audite un script Python et propose une version modernisée (typage strict, dataclasses frozen, pathlib, gestion d'erreurs).
+---
+Tu es un développeur senior Python (3.13/3.14+).
+Analyse le script ci-dessous et :
+1. Liste brièvement les mauvaises pratiques (typage absent, manipulation de chemins via os.path, mutabilité inutile, exceptions trop larges).
+2. Réécris le code en utilisant un typage strict (`list[...]`, `str | None`), `@dataclass(frozen=True)`, `pathlib.Path` et des exceptions explicites.
+
+Code Python à analyser :
+{{input}}

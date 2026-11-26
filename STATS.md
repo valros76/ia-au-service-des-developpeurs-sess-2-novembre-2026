@@ -15,3 +15,19 @@ Avec le cache sur les 4 800 tokens du préfixe fixe, l'appel coûte 0,02788$, so
 - Filtrage strict du diff avant appel API : Exclure les fichiers générés ou verrouillés dès la commande Git : git diff -- . ':(exclude)package-lock.json' ':(exclude)yarn.lock' ':(exclude)*.min.js'. Ajouter un garde-fou en code qui tronque ou rejette tout diff dépassant un budget maximal (ex: 30 000 caractères).
 
 - File d'attente avec backoff exponentiel : Implémenter un mécanisme de réessai automatique (retry) qui intercepte le code HTTP 429, lit l'en-tête Retry-After (ou attend 2s, puis 4s, puis 8s) avant de relancer la requête.
+
+
+# Irritants et résultats attendus 
+
+## Création de tickets jira : Mettre en place un proccess automatisé pour créer des nouveaux tickets
+Quelles sont les parties automatisables du ticket et quelles sont les parties nécessitant une intervention humaine ?
+
+Automatisable : 
+- Type de ticket
+- Date limite par défaut
+- Assignation équipe
+- Contenu du ticket
+
+Nécessitant une intervention humaine : 
+- Fournir un contenu de base à faire découper pour la création de plusieurs tickets, liés à cette tâche
+
