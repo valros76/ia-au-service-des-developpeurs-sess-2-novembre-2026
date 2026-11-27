@@ -2,7 +2,8 @@
   "name": "nodejs",
   "private": true,
   "scripts":{
-    "inspect-mcp":"npx @modelcontextprotocol/inspector node server-mcp.mjs"
+    "inspect-mcp":"npx @modelcontextprotocol/inspector node server-mcp.mjs",
+    "inspect-unified-mcp":"npx @modelcontextprotocol/inspector node unified-server-mcp.mjs"
   },
   "devDependencies": {
     "@types/bun": "latest"
